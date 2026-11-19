@@ -1,21 +1,19 @@
 name: Render video
 on:
   workflow_dispatch:
-  push:
-    paths: ["short-2050.zip"]
 jobs:
-  render:
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 30
+    outputs:
+      total: ${{ steps.t.outputs.total }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg unzip
-      - name: Unpack
-        run: unzip -q short-2050.zip
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg unzip
+      - run: unzip -q short-2050.zip
       - name: Install
         working-directory: short-2050
         run: npm install --no-audit --no-fund
@@ -25,12 +23,65 @@ jobs:
         run: |
           node tools/whisper.mjs public/voice.mp3 ru
           node tools/plan.mjs
-      - name: Render
+      - id: t
+        working-directory: short-2050
+        run: echo "total=$(node -e "console.log(require('./src/plan.json').total)")" >> "$GITHUB_OUTPUT"
+      - run: rm -rf short-2050/node_modules
+      - uses: actions/upload-artifact@v4
+        with:
+          name: project
+          path: short-2050
+  render:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - uses: actions/download-artifact@v4
+        with:
+          name: project
+          path: short-2050
+      - name: Install
+        working-directory: short-2050
+        run: npm install --no-audit --no-fund
+      - name: Render part
         working-directory: short-2050
         run: |
+          TOTAL=${{ needs.prepare.outputs.total }}
+          SIZE=$(( (TOTAL + 9) / 10 ))
+          START=$(( ${{ matrix.part }} * SIZE ))
+          END=$(( START + SIZE - 1 ))
+          if [ $END -ge $TOTAL ]; then END=$(( TOTAL - 1 )); fi
           mkdir -p out
-          npx remotion render src/index.ts Video out/final.mp4 --gl=swiftshader --concurrency=2
+          npx remotion render src/index.ts Video out/part-${{ matrix.part }}.mp4 --frames=$START-$END --gl=swiftshader --concurrency=4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: part-${{ matrix.part }}
+          path: short-2050/out/part-${{ matrix.part }}.mp4
+  join:
+    needs: render
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: part-*
+          merge-multiple: true
+          path: parts
+      - name: Join
+        run: |
+          cd parts
+          for i in 0 1 2 3 4 5 6 7 8 9; do [ -f part-$i.mp4 ] && echo "file 'part-$i.mp4'" >> list.txt; done
+          ffmpeg -f concat -safe 0 -i list.txt -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -b:a 192k ../final.mp4
       - uses: actions/upload-artifact@v4
         with:
           name: video
-          path: short-2050/out/final.mp4
+          path: final.mp4
