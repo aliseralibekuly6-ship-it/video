@@ -60,7 +60,13 @@ jobs:
           END=$(( START + SIZE - 1 ))
           if [ $END -ge $TOTAL ]; then END=$(( TOTAL - 1 )); fi
           mkdir -p out
-          npx remotion render src/index.ts Video out/part-${{ matrix.part }}.mp4 --frames=$START-$END --gl=swiftshader --concurrency=4
+          F=out/part-${{ matrix.part }}.mp4
+          for TRY in "swiftshader 1" "angle 1" "swiftshader 0.5"; do
+            set -- $TRY
+            echo "=== try gl=$1 scale=$2 ==="
+            if npx remotion render src/index.ts Video $F --frames=$START-$END --gl=$1 --scale=$2 --concurrency=2 --timeout=180000; then break; fi
+          done
+          test -f $F
       - uses: actions/upload-artifact@v4
         with:
           name: part-${{ matrix.part }}
@@ -80,7 +86,7 @@ jobs:
         run: |
           cd parts
           for i in 0 1 2 3 4 5 6 7 8 9; do [ -f part-$i.mp4 ] && echo "file 'part-$i.mp4'" >> list.txt; done
-          ffmpeg -f concat -safe 0 -i list.txt -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -b:a 192k ../final.mp4
+          ffmpeg -f concat -safe 0 -i list.txt -vf scale=1080:1920:flags=lanczos -c:v libx264 -crf 18 -pix_fmt yuv420p -c:a aac -b:a 192k ../final.mp4
       - uses: actions/upload-artifact@v4
         with:
           name: video
